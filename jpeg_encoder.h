@@ -43,13 +43,12 @@ private:
 
 private:
 	void _initHuffmanTables(void);
-	void _initCategoryAndBitcode(void);
 	void _initQualityTables(int quality);
 	void _computeHuffmanTable(const char* nr_codes, const unsigned char* std_table, BitString* huffman_table);
 	BitString _getBitCode(int value);
 
-	void _convertColorSpace(int xPos, int yPos, char* yData, char* cbData, char* crData);
-	void _foword_FDC(const char* channel_data, short* fdc_data);
+	void _convertColorSpace(const unsigned char* rgbBuffer, char* yData, char* cbData, char* crData);
+	void _foword_FDC(const char* channel_data, short* fdc_data, const unsigned char* quant_table);
 	void _doHuffmanEncoding(const short* DU, short& prevDC, const BitString* HTDC, const BitString* HTAC, 
 		BitString* outputBitString, int& bitStringCounts);
 

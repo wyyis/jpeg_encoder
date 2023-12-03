@@ -274,28 +274,32 @@ bool JpegEncoder::encodeToJPG(const char* fileName, int quality_scale)
 			short yQuant[64], cbQuant[64], crQuant[64];
 
 			//转换颜色空间
-			_convertColorSpace(xPos, yPos, yData, cbData, crData);
+			unsigned char* rgbBuffer = m_rgbBuffer + yPos * m_width * 3 + xPos * 3;
+			_convertColorSpace(rgbBuffer, yData, cbData, crData);
 
 			BitString outputBitString[128];
 			int bitStringCounts;
 
 			//Y通道压缩
-			_foword_FDC(yData, yQuant);
+			_foword_FDC(yData, yQuant, m_YTable);
 			_doHuffmanEncoding(yQuant, prev_DC_Y, m_Y_DC_Huffman_Table, m_Y_AC_Huffman_Table, outputBitString, bitStringCounts); 
 			_write_bitstring_(outputBitString, bitStringCounts, newByte, newBytePos, fp);
 
 			//Cb通道压缩
-			_foword_FDC(cbData, cbQuant);			
+			_foword_FDC(cbData, cbQuant, m_CbCrTable);			
 			_doHuffmanEncoding(cbQuant, prev_DC_Cb, m_CbCr_DC_Huffman_Table, m_CbCr_AC_Huffman_Table, outputBitString, bitStringCounts);
 			_write_bitstring_(outputBitString, bitStringCounts, newByte, newBytePos, fp);
 
 			//Cr通道压缩
-			_foword_FDC(crData, crQuant);			
+			_foword_FDC(crData, crQuant, m_CbCrTable);			
 			_doHuffmanEncoding(crQuant, prev_DC_Cr, m_CbCr_DC_Huffman_Table, m_CbCr_AC_Huffman_Table, outputBitString, bitStringCounts);
 			_write_bitstring_(outputBitString, bitStringCounts, newByte, newBytePos, fp);
 		}
 	}
-
+	//flush remain data
+	if(newBytePos!=7){
+		_write_byte_(newByte,fp);
+	}
 	_write_word_(0xFFD9, fp); //Write End of Image Marker   
 	
 	fclose(fp);
@@ -482,11 +486,11 @@ void JpegEncoder::_write_bitstring_(const BitString* bs, int counts, int& newByt
 }
 
 //-------------------------------------------------------------------------------
-void JpegEncoder::_convertColorSpace(int xPos, int yPos, char* yData, char* cbData, char* crData)
+void JpegEncoder::_convertColorSpace(const unsigned char* rgbBuffer, char* yData, char* cbData, char* crData)
 {
 	for (int y=0; y<8; y++)
 	{
-		unsigned char* p = m_rgbBuffer + (y+yPos)*m_width*3 + xPos*3;
+		const unsigned char* p = rgbBuffer + y*m_width*3;
 		for (int x=0; x<8; x++)
 		{
 			unsigned char B = *p++;
@@ -501,15 +505,15 @@ void JpegEncoder::_convertColorSpace(int xPos, int yPos, char* yData, char* cbDa
 }
 
 //-------------------------------------------------------------------------------
-void JpegEncoder::_foword_FDC(const char* channel_data, short* fdc_data)
+void JpegEncoder::_foword_FDC(const char* channel_data, short* fdc_data, const unsigned char* quant_table)
 {
 	const float PI = 3.1415926f;
 	for(int v=0; v<8; v++)
 	{
 		for(int u=0; u<8; u++)
 		{
-			float alpha_u = (u==0) ? 1/sqrt(8.0f) : 0.5f;
-			float alpha_v = (v==0) ? 1/sqrt(8.0f) : 0.5f;
+			float alpha_u = (u==0) ? 1.f/sqrt(8.0f) : 0.5f;
+			float alpha_v = (v==0) ? 1.f/sqrt(8.0f) : 0.5f;
 
 			float temp = 0.f;
 			for(int x=0; x<8; x++)
@@ -518,15 +522,17 @@ void JpegEncoder::_foword_FDC(const char* channel_data, short* fdc_data)
 				{
 					float data = channel_data[y*8+x];
 
-					data *= cos((2*x+1)*u*PI/16.0f);
-					data *= cos((2*y+1)*v*PI/16.0f);
+					data *= cosf((2*x+1)*u*PI/16.0f);
+					data *= cosf((2*y+1)*v*PI/16.0f);
 
 					temp += data;
 				}
 			}
+			int zigZagIndex = ZigZag[v * 8 + u];
 
-			temp *= alpha_u*alpha_v/m_YTable[ZigZag[v*8+u]];
-			fdc_data[ZigZag[v*8+u]] = (short) ((short)(temp + 16384.5) - 16384);
+			//量化
+			temp *= alpha_u*alpha_v/ quant_table[zigZagIndex];
+			fdc_data[zigZagIndex] = (short) ((short)(temp + 16384.5) - 16384);
 		}
 	}
 }
