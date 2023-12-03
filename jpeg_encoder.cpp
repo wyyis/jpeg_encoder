@@ -10,6 +10,7 @@
 
 namespace {
 //-------------------------------------------------------------------------------
+//标准亮度量化表 8*8，存储为一维形式
 const unsigned char Luminance_Quantization_Table[64] = 
 {
 	16,  11,  10,  16,  24,  40,  51,  61,
@@ -23,6 +24,7 @@ const unsigned char Luminance_Quantization_Table[64] =
 };
 
 //-------------------------------------------------------------------------------
+//标准色差量化表 8*8，存储为一维形式
 const unsigned char Chrominance_Quantization_Table[64] = 
 {
 	17,  18,  24,  47,  99,  99,  99,  99,
@@ -36,6 +38,7 @@ const unsigned char Chrominance_Quantization_Table[64] =
 };
 
 //-------------------------------------------------------------------------------
+// ZigZag数组用于将DCT变换得到的系数矩阵重新排列成一个一维数组，注意到排列方式是按照低频到高频的顺序，即从左上角排到右下角。目的是为了更有效的进行后续的量化和熵编码
 const char ZigZag[64] =
 { 
 	0, 1, 5, 6,14,15,27,28,
@@ -49,14 +52,25 @@ const char ZigZag[64] =
 };     
 
 //-------------------------------------------------------------------------------
+// 编码是对量化后的一维数组，进行编码。
+//编码流程是：1.先使用行程编码，按照0的个数，若一个数字y前有x个零，则编码为(X,Y)则一维数组的第一个值直流DC部分的值为(0,Y)。
+//2.对Y进行编码，采用的是JPEG提供的一张标准码表。编码后会产生一个长度信息Z加上长度信息个的编码位
+//3.将X和Z合并成一个十六进制形式M。
+//4.此时再分别用到直流部分的编码表和交流部分的编码表（长度可能更大），分别对直流部分的M和交流部分的M进行编码。
+
+
+//这里是亮度分量的DC部分的M的编码信息。第一个数组表示编码长度为数组索引号+1的被编码值的个数
 const char Standard_DC_Luminance_NRCodes[] = { 0, 0, 7, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
+//这个矩阵表示的是亮度分量的DC部分的M的值出现的频率由高到低排列，同时也对应着上面一个数组的编码长度递增的顺序。即此数组中的前7个元素用3个位进行编码，再其次的后面1个元素用4个位进行编码
 const unsigned char Standard_DC_Luminance_Values[] = { 4, 5, 3, 2, 6, 1, 0, 7, 8, 9, 10, 11 };
 
 //-------------------------------------------------------------------------------
+//这两个数组于上面两个数组类似，只不过对应的是色度分量的DC部分
 const char Standard_DC_Chrominance_NRCodes[] = { 0, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0 };
 const unsigned char Standard_DC_Chrominance_Values[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 };
 
 //-------------------------------------------------------------------------------
+//这两个数组也与上面两个数组类似，只不过对应的是亮度分量的交流部分
 const char Standard_AC_Luminance_NRCodes[] = { 0, 2, 1, 3, 3, 2, 4, 3, 5, 5, 4, 4, 0, 0, 1, 0x7d };
 const unsigned char Standard_AC_Luminance_Values[] = 
 {
@@ -84,6 +98,7 @@ const unsigned char Standard_AC_Luminance_Values[] =
 };
 
 //-------------------------------------------------------------------------------
+//这两个数组也与上面两个数组类似，只不过对应的是色度分量的交流部分
 const char Standard_AC_Chrominance_NRCodes[] = { 0, 2, 1, 2, 4, 4, 3, 4, 7, 5, 4, 4, 0, 1, 2, 0x77 };
 const unsigned char Standard_AC_Chrominance_Values[] =
 {
@@ -118,19 +133,21 @@ JpegEncoder::JpegEncoder()
 	, m_height(0)
 	, m_rgbBuffer(0)
 {
-	//初始化静态表格
+	//初始化静态表格，准备好霍夫曼编码表用于后续的JPEG编码过程
 	_initHuffmanTables();
 }
 
 //-------------------------------------------------------------------------------
 JpegEncoder::~JpegEncoder()
 {
+	//结束时调用
 	clean();
 }
 
 //-------------------------------------------------------------------------------
 void JpegEncoder::clean(void)
 {
+	//清除m_rgbBuffer
 	if(m_rgbBuffer) delete[] m_rgbBuffer;
 	m_rgbBuffer=0;
 
@@ -139,33 +156,35 @@ void JpegEncoder::clean(void)
 }
 
 //-------------------------------------------------------------------------------
+// 将位图文件里的像素信息存在m_rgbBuffer中，存储顺序为图像的从上至下，从左至右
 bool JpegEncoder::readFromBMP(const char* fileName)
 {
-	//清理旧数据
+	//开始时清理旧数据
 	clean();
 
 	//BMP 文件格式
+	//BMP格式图片的文件头长度是54字节，包括14字节的文件数据头、40字节的位图信息数据头
 #pragma pack(push, 2)
 	typedef struct {
-			unsigned short	bfType;
-			unsigned int	bfSize;
-			unsigned short	bfReserved1;
-			unsigned short	bfReserved2;
-			unsigned int	bfOffBits;
+			unsigned short	bfType;//文件类型
+			unsigned int	bfSize;//bmp文件的大小
+			unsigned short	bfReserved1;//预留字段，通常为0
+			unsigned short	bfReserved2;//预留字段，通常为0
+			unsigned int	bfOffBits;//图片信息的开始位置
 	} BITMAPFILEHEADER;
 
 	typedef struct {
-			unsigned int	biSize;
-			int				biWidth;
-			int				biHeight;
-			unsigned short	biPlanes;
-			unsigned short	biBitCount;
-			unsigned int	biCompression;
-			unsigned int	biSizeImage;
-			int				biXPelsPerMeter;
-			int				biYPelsPerMeter;
-			unsigned int	biClrUsed;
-			unsigned int	biClrImportant;
+			unsigned int	biSize;//位图信息数据头的大小
+			int				biWidth;//图像宽度
+			int				biHeight;//图像高度
+			unsigned short	biPlanes;//色彩平面的数量，必须为1
+			unsigned short	biBitCount;//每像素用多少bit表示
+			unsigned int	biCompression;//采用何种压缩方式，通常不压缩，即BI_RGB，对应值为0
+			unsigned int	biSizeImage;//图片大小（原始位图数据的大小）
+			int				biXPelsPerMeter;//横向分辨率（像素/米）
+			int				biYPelsPerMeter;//纵向分辨率（像素/米）
+			unsigned int	biClrUsed;//调色板中颜色数量，通常为0（不表示没有颜色）
+			unsigned int	biClrImportant;//重要颜色的数量（通常被忽略），通常为0，表示每种颜色都重要
 	} BITMAPINFOHEADER;
 #pragma pack(pop)
 
@@ -176,29 +195,30 @@ bool JpegEncoder::readFromBMP(const char* fileName)
 	bool successed=false;
 	do
 	{
-		BITMAPFILEHEADER fileHeader;
-		BITMAPINFOHEADER infoHeader;
-
+		BITMAPFILEHEADER fileHeader;//文件头
+		BITMAPINFOHEADER infoHeader;//信息头
+		//fread函数返回的是实际元素个数，1表示读取一个单位的的数据存入文件头fileHeader,即sizeof(fileHeader)
 		if(1 != fread(&fileHeader, sizeof(fileHeader), 1, fp)) break;
-		if(fileHeader.bfType!=0x4D42) break;
+		if(fileHeader.bfType!=0x4D42) break;//若读取的文件头信息中文件类型不为bmp
 
-		if(1 != fread(&infoHeader, sizeof(infoHeader), 1, fp)) break;
-		if(infoHeader.biBitCount!=24 || infoHeader.biCompression!=0) break;
-		int width = infoHeader.biWidth;
-		int height = infoHeader.biHeight < 0 ? (-infoHeader.biHeight) : infoHeader.biHeight;
-		if((width&7)!=0 || (height&7)!=0) break;	//必须是8的倍数
+		if(1 != fread(&infoHeader, sizeof(infoHeader), 1, fp)) break;//读取信息头，则XXX
+		if(infoHeader.biBitCount!=24 || infoHeader.biCompression!=0) break;//如果信息头中的位深度不为24和压缩方式不为0，则XXX
+		int width = infoHeader.biWidth;//从信息头获取图像宽度
+		int height = infoHeader.biHeight < 0 ? (-infoHeader.biHeight) : infoHeader.biHeight;//从信息头获取图像高度，若高度<0则置反。
+		if((width&7)!=0 || (height&7)!=0) break;	//必须是8的倍数，7表示与二进制位0111与。而8的倍数最后3位必为000，即不能出现1-7
 
-		int bmpSize = width*height*3;
+		int bmpSize = width*height*3;//buffer数组的长度
 
 		unsigned char* buffer = new unsigned char[bmpSize];
 		if(buffer==0) break;
 
-		fseek(fp, fileHeader.bfOffBits, SEEK_SET);
-
-		if(infoHeader.biHeight>0)
+		fseek(fp, fileHeader.bfOffBits, SEEK_SET);//将文件描述符指向的地址转向文件头中的图片信息开始位置
+		//BMP存储像素值的方式为从下至上，从左至右，紧随着文件头存储的字节为图像最下一行的数值，从左下角开始依次存储。
+		if(infoHeader.biHeight>0)//正向读取
 		{
 			for(int i=0; i<height; i++)
 			{
+				//文件最下面的为图像最上面的像素
 				if(width != fread(buffer+(height-1-i)*width*3, 3, width, fp)) 
 				{
 					delete[] buffer; buffer=0;
@@ -208,6 +228,7 @@ bool JpegEncoder::readFromBMP(const char* fileName)
 		}
 		else
 		{
+			//若高度值为-值，则可直接一次性读完所有像素数据
 			if(width*height != fread(buffer, 3, width*height, fp))
 			{
 				delete[] buffer; buffer=0;
@@ -318,14 +339,14 @@ void JpegEncoder::_initQualityTables(int quality_scale)
 {
 	if(quality_scale<=0) quality_scale=1;
 	if(quality_scale>=100) quality_scale=99;
-
+	//8*8的量化系数
 	for(int i=0; i<64; i++)
-	{
+	{	
+		//将量化系数矩阵展开成一维数组（从左上->右下，锯齿形排列）
 		int temp = ((int)(Luminance_Quantization_Table[i] * quality_scale + 50) / 100);
 		if (temp<=0) temp = 1;
 		if (temp>0xFF) temp = 0xFF;
 		m_YTable[ZigZag[i]] = (unsigned char)temp;
-
 		temp = ((int)(Chrominance_Quantization_Table[i] * quality_scale + 50) / 100);
 		if (temp<=0) 	temp = 1;
 		if (temp>0xFF) temp = 0xFF;
